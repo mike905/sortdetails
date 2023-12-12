@@ -11,5 +11,5 @@ def print_excel_data(filename):
 # Использование функции
 #print_excel_data("ИЗПА.5177.xlsx")
 
-print_excel_data("ИЗПА.2322.02.xlsx")
+print_excel_data("итоговые_данные_10.12.23.xlsx")
 
