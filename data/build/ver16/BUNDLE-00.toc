@@ -1,0 +1,3 @@
+([('ver16',
+   '/Users/mihail/PycharmProjects/ydirect/telethon/onserver/kotov/data/dist/ver16',
+   'EXECUTABLE')],)
