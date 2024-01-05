@@ -1,4 +1,4 @@
-# не работает 1с
+# длиннные файлы 
 import re
 import pandas as pd 
 import os
@@ -10,11 +10,15 @@ def log_message(message):
     """Print a log message to the console."""
     print(f"LOG: {message}")
 
-def read_file(filename):
-    log_message(f"Reading file: {filename}")
+def read_file(filename, directory):
+    """Попытка прочитать файл по имени с расширением и без."""
+    log_message(f"Attempting to read file: {filename}")
     try:
         base_name = os.path.splitext(os.path.basename(filename))[0]
+        log_message(f"Base name extracted: {base_name}")
         parts = re.split(r'\s+', base_name, 1)
+        log_message(f"Parts split from base name: {parts}")
+
         if len(parts) == 2:
             unit_designation, unit_description = parts
         elif len(parts) == 1:
@@ -23,16 +27,27 @@ def read_file(filename):
         else:
             raise ValueError(f"Unexpected file format: {filename}")
 
-        df = pd.read_excel(filename, header=None)
-        log_message(f"File read successfully: {filename}")
-        return df, unit_designation
+        full_path = os.path.join(directory, filename)
+        if os.path.isfile(full_path):
+            df = pd.read_excel(full_path, header=None)
+            log_message(f"File read successfully: {filename}")
+            return df, unit_designation, unit_description
+        else:
+            # Попытка найти файлы, начинающиеся с базового обозначения
+            for file in os.listdir(directory):
+                if file.startswith(unit_designation) and file.endswith('.xlsx'):
+                    full_path = os.path.join(directory, file)
+                    df = pd.read_excel(full_path, header=None)
+                    log_message(f"File read successfully with base designation: {file}")
+                    return df, unit_designation, unit_description
 
-    except FileNotFoundError:
-        log_message(f"Error: File '{filename}' not found.")
-        return None, None
+            log_message(f"Error: File '{filename}' not found.")
+            return None, None, None
+
     except Exception as e:
         log_message(f"Unexpected error when reading file: {e}")
-        return None, None
+        return None, None, None
+
 
 
 
@@ -72,11 +87,13 @@ class AssemblyUnit:
         self.details = []
         self.sub_units = []
 
-    def process_file(self, materials_dict):
-        df, _ = read_file(self.filename + '.xlsx')
+    def process_file(self, materials_dict, directory):
+        # Assume 'self.filename' contains just the filename without path (e.g., 'ИНРТ.100.00.00.000 Перемешиватель.xlsx')
+        full_path = os.path.join(directory, self.filename)  # Create the full file path
+        df, unit_designation, unit_description = read_file(full_path, directory)  # Use the full path and directory
         if df is not None:
-            self.process_details(df, materials_dict)  # Передаем materials_dict в process_details
-            self.process_sub_units(df, materials_dict)  # Передаем materials_dict в process_sub_units
+            self.process_details(df, materials_dict)  # Process details
+            self.process_sub_units(df, materials_dict, directory)  # Process sub-assemblies
 
 
 
@@ -87,14 +104,13 @@ class AssemblyUnit:
             detail = Detail(row[3], row[4], row[5], row[6], total_qty, materials_dict)
             self.details.append(detail)
 
-    def process_sub_units(self, df, materials_dict):
+    def process_sub_units(self, df, materials_dict, directory):
         sub_units_section = extract_section(df, 'Сборочные единицы')
         for _, row in sub_units_section.iterrows():
-            # Аналогично, используйте числовые индексы для доступа к данным
             sub_unit = AssemblyUnit(row[3], row[5], self.level + 1, self.quantity * self.parent_qty)
-            sub_unit.process_file(materials_dict)  # передаем materials_dict
+            sub_unit.process_file(materials_dict, directory)  # Pass materials_dict and directory
 
-            self.sub_units.append(sub_unit)
+
 
 
 
@@ -341,23 +357,30 @@ class DataAggregator:
 
 
     def get_filename_from_note(self, note, main_filename):
-        filename = f"{main_filename} – Другое.xlsx"  # Стандартное имя, если нет совпадений
+        # Стандартное имя файла, если нет совпадений
+        filename = f"{main_filename} – Другое.xlsx"
 
+        # Разделение примечания на части и обработка каждой части
         for part in note.split(','):
             part = part.strip()  # Удаление лишних пробелов
             key = part.rstrip('0123456789')  # Извлечение ключа (без цифр очереди)
 
-            if key in self.note_to_filename:  # Проверка наличия ключа в словаре
-                name = self.note_to_filename[key]  # Получение имени процесса
+            # Проверка наличия ключа в словаре сопоставлений
+            if key in self.note_to_filename:
+                # Получение имени процесса из словаря сопоставлений
+                name = self.note_to_filename[key]
 
                 # Проверка наличия и обработка номера очереди
                 if len(part) > len(key):  # Если есть цифры после ключа
                     queue_num = part[len(key):]  # Извлечение номера очереди
+                    # Формирование имени файла с номером очереди
                     filename = f"{main_filename} – {name} {queue_num}-я очередь.xlsx"
                 else:  # Если нет номера очереди, то просто имя процесса
                     filename = f"{main_filename} – {name}.xlsx"
 
-        return filename
+        # Возвращаем полное имя файла, включая путь к директории
+        return os.path.join(os.path.dirname(main_filename), filename)
+
 
 
 
@@ -481,7 +504,7 @@ if __name__ == "__main__":
         try:
             main_file_path = os.path.abspath(args.main_file)
             materials_file_path = os.path.abspath(args.materials_file)
-            directory = os.path.dirname(main_file_path)
+            directory = os.path.dirname(main_file_path)  # The directory where the files are located
             filename_without_extension = os.path.splitext(os.path.basename(main_file_path))[0]
             output_directory = os.path.join(directory, filename_without_extension)
 
@@ -491,7 +514,9 @@ if __name__ == "__main__":
 
             materials_dict = load_materials_data(materials_file_path)
             main_assembly = AssemblyUnit(filename_without_extension, args.quantity)
-            main_assembly.process_file(materials_dict)
+
+            # Updated call to process_file with the directory argument
+            main_assembly.process_file(materials_dict, directory)
 
             data_output = DataOutput(main_assembly)
             tree_output_path = os.path.join(output_directory, f"{filename_without_extension}_tree_structure.xlsx")
@@ -514,5 +539,7 @@ if __name__ == "__main__":
     else:
         app = Application()
         app.mainloop()
+
+
 
 #python3 ver16.py --deal_name wer --quantity 2 --main_file "ИНРТ.100.00.00.000.xlsx" --materials_file "Матриалы 1С.xlsx"
