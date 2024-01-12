@@ -1,4 +1,4 @@
-#работет на короткий файлах без лога в gui
+#работет 
 import re
 import pandas as pd 
 import os
@@ -6,33 +6,39 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 import traceback
 import argparse
+import glob
+import datetime
+
+
 def log_message(message):
     """Print a log message to the console."""
     print(f"LOG: {message}")
 
 def read_file(filename):
-    log_message(f"Reading file: {filename}")
+    log_message(f"Attempting to read file: {filename}")
     try:
-        base_name = os.path.splitext(os.path.basename(filename))[0]
-        parts = re.split(r'\s+', base_name, 1)
-        if len(parts) == 2:
-            unit_designation, unit_description = parts
-        elif len(parts) == 1:
-            unit_designation = parts[0]
-            unit_description = ""
-        else:
-            raise ValueError(f"Unexpected file format: {filename}")
-
         df = pd.read_excel(filename, header=None)
         log_message(f"File read successfully: {filename}")
-        return df, unit_designation  # Возвращаем DataFrame и обозначение
 
+        # Получение обозначения из названия файла
+        base_name = os.path.splitext(os.path.basename(filename))[0]
+        unit_designation = base_name.split(' ')[0]
+
+        return df, unit_designation
     except FileNotFoundError:
-        log_message(f"Error: File '{filename}' not found.")
-        return None, None  # Возвращаем None, None если файл не найден
+        log_message(f"FileNotFoundError: File '{filename}' not found.")
+    except pd.errors.EmptyDataError:
+        log_message(f"EmptyDataError: File '{filename}' is empty or invalid.")
     except Exception as e:
-        log_message(f"Unexpected error when reading file: {e}")
-        return None, None  # Возвращаем None, None в случае другой ошибки
+        log_message(f"Unexpected error when reading file '{filename}': {e}")
+
+    return None, None
+ 
+
+
+
+
+
 
 
 
@@ -63,36 +69,43 @@ def load_materials_data(materials_file_path):
         return {}
 
 
-def process_assembly_unit(main_file, quantity, materials_file, deal_name):
+def process_assembly_unit(main_file, quantity, materials_file, deal_name, output_directory):
+    log_message(f"Starting processing assembly unit for main file: {main_file}")
     main_file_path = os.path.abspath(main_file)
     materials_file_path = os.path.abspath(materials_file)
-    directory = os.path.dirname(main_file_path)
-    filename_without_extension = os.path.splitext(os.path.basename(main_file_path))[0]
-    output_directory = os.path.join(directory, filename_without_extension)
 
+    # Изменение формата даты и времени
+    current_datetime = datetime.datetime.now().strftime("%H-%M_%d-%m-%y")
+    output_directory = os.path.join(output_directory, current_datetime + "_" + os.path.basename(main_file_path))
+
+    log_message(f"Output directory: {output_directory}")
     if not os.path.exists(output_directory):
         os.makedirs(output_directory)
-        log_message(f"Создана директория для выходных файлов: {output_directory}")
+        log_message(f"Output directory created: {output_directory}")
 
+    log_message("Loading materials data")
     materials_dict = load_materials_data(materials_file_path)
-    main_assembly = AssemblyUnit(filename_without_extension, quantity)
+
+    main_assembly = AssemblyUnit(os.path.splitext(os.path.basename(main_file_path))[0], quantity)
     main_assembly.process_file(materials_dict)
 
     data_output = DataOutput(main_assembly)
-    tree_output_path = os.path.join(output_directory, f"{filename_without_extension}_tree_structure.xlsx")
+    tree_output_path = os.path.join(output_directory, f"{main_assembly.filename}_tree_structure.xlsx")
     data_output.save_tree_to_excel(tree_output_path, deal_name, quantity)
 
     aggregator = DataAggregator(main_assembly, materials_dict)
     aggregated_data = aggregator.aggregate_details()
-    aggregated_file_name = os.path.join(output_directory, f"{filename_without_extension}_aggregated.xlsx")
+    aggregated_file_name = os.path.join(output_directory, f"{main_assembly.filename}_aggregated.xlsx")
     aggregator.save_aggregated_data(aggregated_data, aggregated_file_name, deal_name, quantity)
 
-    aggregator.save_grouped_data(filename_without_extension, deal_name, quantity)
-
-    file_path_1c = os.path.join(output_directory, f"{filename_without_extension}_1C.xlsx")
+    file_path_1c = os.path.join(output_directory, f"{main_assembly.filename}_1C.xlsx")
     aggregator.save_1c_data(aggregated_data, file_path_1c, quantity)
 
-    print(f"Обработка завершена, результаты сохранены в {output_directory}")
+    aggregator.save_grouped_data(main_file_path, output_directory, deal_name, quantity)
+
+    log_message(f"Processing completed, results saved in {output_directory}")
+
+
 
 
 
@@ -115,12 +128,37 @@ class AssemblyUnit:
         self.note = note  # Добавлен атрибут note
 
     def process_file(self, materials_dict):
-        df, unit_designation = read_file(self.filename + '.xlsx')
+        log_message(f"Processing file for unit: {self.filename}")
+        
+        # Проверяем существование файла с полным названием
+        full_filename = f"{self.filename}.xlsx"
+        df, unit_designation = read_file(full_filename)
+
+        if df is None:
+            log_message(f"File not found with name: {self.filename}. Trying glob search.")
+            possible_files = glob.glob(self.filename + '*')
+            for file in possible_files:
+                if os.path.isfile(file):
+                    log_message(f"Trying file found by glob: {file}")
+                    df, unit_designation = read_file(file)
+                    if df is not None:
+                        log_message(f"File found by glob: {file}")
+                        break
+
         if df is not None:
-            self.designation = unit_designation  # Устанавливаем обозначение
-            # Здесь должна быть логика обработки деталей и подсборок
-            self.process_details(df, materials_dict)  # Обрабатываем детали
-            self.process_sub_units(df, materials_dict)  # Обрабатываем подсборки
+            self.designation = unit_designation
+            log_message(f"Processing details and sub-units for file: {self.filename}")
+            self.process_details(df, materials_dict)
+            self.process_sub_units(df, materials_dict)
+        else:
+            log_message(f"Error: Unable to find the file for '{self.filename}'.")
+
+
+
+ 
+
+
+
 
 
     def process_details(self, df, materials_dict):
@@ -295,25 +333,29 @@ class DataAggregator:
             print(f"Ошибка при сохранении итоговых данных: {e}")
     
 
-    def save_grouped_data(self, main_filename, deal_name, total_quantity):
+
+    def save_grouped_data(self, main_file, output_directory, deal_name, total_quantity):
         aggregated_data = self.aggregate_details()
 
         grouped_data = {}
         for _, row in aggregated_data.iterrows():
             note = row['Примечание']
-            filename = self.get_filename_from_note(note, main_filename)
-            file_path = os.path.join(main_filename, filename)
+            filename = self.get_filename_from_note(note, os.path.splitext(os.path.basename(main_file))[0])
+            file_path = os.path.join(output_directory, filename)
 
             if file_path not in grouped_data:
                 grouped_data[file_path] = []
             grouped_data[file_path].append(row)
 
+        log_message(f"Grouped data prepared: {grouped_data.keys()}")
+
         for file_path, data_rows in grouped_data.items():
             df_to_save = pd.DataFrame(data_rows)
             df_to_save['Количество'] = df_to_save['Общее количество'] // total_quantity
-            # Добавляем поля 'Обозначение', 'Наименование' для каждого файла
             df_to_save = df_to_save[['Обозначение', 'Наименование', 'Примечание', 'Материалы', 'Общее количество', 'Количество']]
             df_to_save.to_excel(file_path, index=False)
+            log_message(f"Grouped file saved: {file_path}")
+
 
 
 
@@ -329,15 +371,6 @@ class DataAggregator:
             print(f"Итоговый файл 1С успешно сохранен: {file_path_1c}")
         except Exception as e:
             print(f"Ошибка при сохранении итогового файла 1С: {e}")
-
-
-
-
-
-
-
-
-
 
 
   
@@ -423,9 +456,9 @@ class Application(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Обработчик сборочных единиц")
-        self.geometry("800x600")
-        # Инициализация materials_dict здесь
-        self.materials_dict = None  # Заполняется позже
+        self.geometry("400x300")
+        self.materials_dict = None
+        self.output_directory = None  # Добавлено для сохранения пути выходной директории
         self.create_widgets()
 
     def create_widgets(self):
@@ -450,8 +483,8 @@ class Application(tk.Tk):
         self.quantity_entry.pack()
 
         # Text widget for displaying data
-        self.text = tk.Text(self, height=30, width=90)
-        self.text.pack(pady=20)
+        #self.text = tk.Text(self, height=30, width=90)
+        #self.text.pack(pady=20)
 
     def choose_file(self):
         file_path = filedialog.askopenfilename(filetypes=[("Excel files", "*.xlsx")])
@@ -468,7 +501,11 @@ class Application(tk.Tk):
 
                 if not self.materials_dict:
                     raise ValueError("Словарь материалов не загружен.")
-                process_assembly_unit(file_path, total_quantity, self.materials_file_path, deal_name)
+
+                # Задаем путь для выходной директории
+                self.output_directory = os.path.dirname(file_path)
+
+                process_assembly_unit(file_path, total_quantity, self.materials_file_path, deal_name, self.output_directory)
 
                 messagebox.showinfo("Успех", "Файлы обработаны и успешно сохранены!")
             except ValueError as ve:
@@ -476,6 +513,7 @@ class Application(tk.Tk):
             except Exception as e:
                 traceback.print_exc()
                 messagebox.showerror("Ошибка", str(e))
+
 
 
 
@@ -520,6 +558,3 @@ if __name__ == "__main__":
         # Если аргументы не были предоставлены, запускаем GUI
         app = Application()
         app.mainloop()
-
-
-##python3 ver16.py --deal_name wer --quantity 2 --main_file "ИНРТ.100.00.00.000.xlsx" --materials_file "Матриалы 1С.xlsx"
